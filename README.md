@@ -17,7 +17,7 @@ python -m http.server 8000      # index.html 을 더블클릭하면 안 됩니�
 1. 이 폴더를 내 GitHub 저장소로
 2. vercel.com → Add New → Project → Import → Application Preset: Other → Deploy
 3. Settings → Environment Variables
-     GEMINI_API_KEY = (aistudio.google.com 에서 받은 키)
+     Gemini_API_Key = (aistudio.google.com 에서 받은 키)
      GEMINI_MODEL   = (선택. «서버 기본값»으로 쓸 모델. 비우면 api/classify.py 의 기본값)
    → 저장하고 다시 배포
 ```

@@ -112,9 +112,9 @@ class handler(BaseHTTPRequestHandler):
         return self._send({"default": default_model()})
 
     def do_POST(self):
-        key = os.environ.get("GEMINI_API_KEY", "").strip()
+        key = os.environ.get("Gemini_API_Key", "").strip()
         if not key:
-            return self._send({"results": None, "reason": "키가 없습니다 — Vercel 환경 변수 GEMINI_API_KEY"})
+            return self._send({"results": None, "reason": "키가 없습니다 — Vercel 환경 변수 Gemini_API_Key"})
         model = default_model()
         try:
             n = int(self.headers.get("Content-Length", "0"))
