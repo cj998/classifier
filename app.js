@@ -1,7 +1,7 @@
 /* 고객 한마디 분류기 — 화면.
  *
  * 흐름: 문장 → 가림(mask.js, 브라우저 안) → AI(api/classify) → 실패하면 규칙(rules.js)
- * 채점: 정답 100건을 규칙으로, 또는 AI로(20건씩 다섯 번) 돌려 맞힌 비율을 잰다.
+ * 채점: 정답 100건을 규칙으로, 또는 AI로(10건씩 열 번) 돌려 맞힌 비율을 잰다.
  */
 (function () {
   "use strict";
@@ -24,13 +24,69 @@
     ["try", "score", "rules"].forEach(k => { $("#tab-" + k).hidden = k !== b.dataset.tab; });
   }));
 
+  // ── AI 모델 고르기 ──────────────────────────────────
+  // 모델 이름은 자주 바뀐다. 아래는 공식 가격표(aistudio.google.com/docs/pricing, 2026-11-06 확인)에서
+  // «Free tier 무료»로 표시된 글쓰기 모델 중 5개다.
+  // ※ 순서는 «추정»이다. 하루 무료 요청 수(RPD)는 가격표에 표가 없어 근거를 찾지 못했다.
+  //   가벼운(lite) 모델이 한도가 넉넉할 것이라는 짐작일 뿐이다 — AI Studio 에 로그인해 확인한다.
+  const MODELS = [
+    { id: "gemini-3.8-flash", note: "" },
+    { id: "gemini-3.6-flash", note: "이전 세대" },
+    { id: "gemini-3.5-flash-lite", note: "" },
+    { id: "gemini-3.1-flash-lite", note: "" },
+    { id: "gemini-3-flash-preview", note: "프리뷰 · 구형" },
+  ];
+  const BATCH = 10;           // 채점할 때 한 번에 보내는 문장 수 (서버 MAX_TEXTS 는 20)
+  const KEY_MODEL = "classifier.model";
+  const CUSTOM = "__custom__";
+
+  function store(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* 못 써도 앱은 돈다 */ } }
+  function recall(k) { try { return localStorage.getItem(k) || ""; } catch (e) { return ""; } }
+
+  // 지금 고른 모델 이름. «서버 기본값»이면 빈 문자열
+  function chosenModel() {
+    const v = $("#model-select").value;
+    return v === CUSTOM ? $("#model-custom").value.trim() : v;
+  }
+
+  function showModel() {
+    const m = chosenModel();
+    const el = $("#model-now");
+    if (m) el.textContent = `지금 호출하는 모델: ${m}`;
+    else el.textContent = `지금 호출하는 모델: 서버 기본값` + (S.serverDefault ? ` (${S.serverDefault})` : "");
+  }
+
+  function setupModel() {
+    const sel = $("#model-select");
+    sel.innerHTML = `<option value="">서버 기본값</option>`
+      + MODELS.map(m => `<option value="${m.id}">${m.id}${m.note ? " — " + m.note : ""}</option>`).join("")
+      + `<option value="${CUSTOM}">직접 입력…</option>`;
+    const saved = recall(KEY_MODEL);
+    if (saved && !MODELS.some(m => m.id === saved)) {
+      sel.value = CUSTOM; $("#model-custom").value = saved; $("#model-custom").hidden = false;
+    } else {
+      sel.value = saved;        // 목록에 없거나 빈 값이면 «서버 기본값»
+    }
+    sel.addEventListener("change", () => {
+      $("#model-custom").hidden = sel.value !== CUSTOM;
+      store(KEY_MODEL, chosenModel());
+      showModel();
+    });
+    $("#model-custom").addEventListener("input", () => { store(KEY_MODEL, chosenModel()); showModel(); });
+    showModel();
+    // 서버가 쓰는 기본 모델 이름 — 서버 함수가 없으면(로컬) 조용히 건너뛴다
+    fetch("api/classify").then(r => r.ok ? r.json() : null).then(d => {
+      if (d && typeof d.default === "string") { S.serverDefault = d.default; showModel(); }
+    }).catch(() => {});
+  }
+
   // ── AI 호출 ─────────────────────────────────────────
   async function askAI(maskedTexts) {
     try {
       const r = await fetch("api/classify", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ texts: maskedTexts, criteria: S.criteria }),
+        body: JSON.stringify({ texts: maskedTexts, criteria: S.criteria, model: chosenModel() }),
       });
       if (!r.ok) return { results: null, reason: `서버 함수가 없습니다 (${r.status}) — 배포하면 생깁니다` };
       return await r.json();
@@ -116,17 +172,25 @@
     btn.disabled = true;
     const masked = S.test.map(r => Mask.mask(r.text).masked);
     const results = [];
-    for (let i = 0; i < masked.length; i += 20) {
+    let usedModel = "";
+    for (let i = 0; i < masked.length; i += BATCH) {
       btn.textContent = `AI 채점 중… ${i}/${masked.length}`;
-      const r = await askAI(masked.slice(i, i + 20));
+      const part = masked.slice(i, i + BATCH);
+      let r = await askAI(part);
+      if (r.timeout) {            // 느린 묶음만 한 번 더
+        btn.textContent = `다시 시도… ${i}/${masked.length}`;
+        r = await askAI(part);
+      }
       if (!r.results) {
         $("#score-msg").hidden = false;
         $("#score-msg").textContent = `AI로 채점하지 못했습니다 — ${r.reason}`;
         btn.disabled = false; btn.textContent = "AI로 채점";
         return;
       }
+      if (r.model) usedModel = r.model;
       results.push(...r.results);
     }
+    $("#th-ai").textContent = usedModel ? "AI · " + usedModel : "AI";
     // 답을 못 받은 문장은 «오답»으로 센다 — 빠진 것을 빼고 세면 점수가 부풀려진다
     const miss = { category: "-", sentiment: "-", urgency: "-" };
     S.aiResults = results;
@@ -158,5 +222,6 @@
     $("#crit-urg").textContent = c.urgency.guide;
   }
 
+  setupModel();
   load();
 })();
